@@ -1,0 +1,94 @@
+name: Pruebas de rendimiento
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  rendimiento:
+    runs-on: ubuntu-latest
+    env:
+      JMETER_VERSION: "5.6.3"
+
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Instalar JMeter
+        run: |
+          curl -fsSL -o jmeter.tgz "https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz"
+          tar -xzf jmeter.tgz -C "$HOME"
+          echo "$HOME/apache-jmeter-${JMETER_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Verificar versiones
+        run: |
+          java -version
+          jmeter --version
+
+      - name: Levantar la API en segundo plano
+        run: nohup python3 api/ticketmania_simple.py > api.log 2>&1 &
+
+      - name: Esperar a que la API responda
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fs http://127.0.0.1:8080/api/salud; then
+              echo ""
+              echo "API lista"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "La API no respondió en 30 segundos"
+          cat api.log
+          exit 1
+
+      - name: Ejecutar el plan en modo no-GUI
+        working-directory: pruebas/jmeter
+        run: jmeter -n -t Ticketmania.jmx -l resultados.jtl -e -o reporte
+
+      - name: Revisar peticiones fallidas en el .jtl
+        working-directory: pruebas/jmeter
+        run: |
+          python3 - <<'EOF'
+          import csv, os, sys
+          from collections import Counter
+
+          total, fallidas = Counter(), Counter()
+          with open("resultados.jtl", newline="") as f:
+              for fila in csv.DictReader(f):
+                  total[fila["label"]] += 1
+                  if fila["success"] != "true":
+                      fallidas[fila["label"]] += 1
+
+          lineas = ["| Petición | Muestras | Fallidas |", "|---|---|---|"]
+          for etiqueta in total:
+              lineas.append(f"| {etiqueta} | {total[etiqueta]} | {fallidas[etiqueta]} |")
+          lineas.append(f"| **Total** | **{sum(total.values())}** | **{sum(fallidas.values())}** |")
+          resumen = "\n".join(lineas)
+          print(resumen)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("## Resultado de JMeter\n\n" + resumen + "\n")
+
+          if sum(fallidas.values()) > 0:
+              print(f"Hay {sum(fallidas.values())} peticiones fallidas")
+              sys.exit(1)
+          print("Sin peticiones fallidas")
+          EOF
+
+      - name: Subir el reporte
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-jmeter
+          path: |
+            pruebas/jmeter/reporte/
+            pruebas/jmeter/resultados.jtl
+            api.log
+          if-no-files-found: warn

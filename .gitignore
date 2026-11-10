@@ -1,0 +1,12 @@
+# Salidas de JMeter (se regeneran en cada ejecución)
+*.jtl
+jmeter.log
+reporte/
+pruebas/experimentacion/resultados/
+perfmon.csv
+
+# Python
+__pycache__/
+
+# Sistema
+.DS_Store
